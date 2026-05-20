@@ -79,17 +79,21 @@ def read_pin():
 
 
 def connected_peers():
-    """Return the count of phones currently bridged to pan0."""
-    # `bridge fdb show br pan0` lists MAC entries. Count entries with `master pan0`
-    # excluding our own bridge MAC (`self permanent`).
+    """Return the count of phones currently bridged to pan0.
+
+    A bridged peer appears as `MAC dev bnep<N> master pan0` in the FDB.
+    The bridge's own MAC also appears as `MAC dev pan0 master pan0 permanent`,
+    so we must filter by the slave device name (`bnep*`) rather than just
+    `master pan0` to avoid counting the bridge itself.
+    """
     rc, out, _ = _run(["bridge", "fdb", "show", "br", PAN_INTERFACE])
     if rc != 0 or not out:
         return 0
     count = 0
     for line in out.splitlines():
-        # External peers appear as: "aa:bb:cc:dd:ee:ff dev bnepN master pan0"
-        # The bridge's own MAC has "self permanent" on the line.
-        if "master " + PAN_INTERFACE in line and "self" not in line:
+        # Peer line: "aa:bb:cc:dd:ee:ff dev bnepN master pan0"
+        # Bridge own line: "16:0a:... dev pan0 vlan 1 master pan0 permanent"
+        if "dev bnep" in line and "master " + PAN_INTERFACE in line:
             count += 1
     return count
 
