@@ -54,6 +54,38 @@ PIN=$(cat "$PIN_FILE")
 echo "    pairing PIN: $PIN"
 
 # ----------------------------------------------------------------------
+# 2a. Disable BlueZ audio plugins
+#
+# BlueZ on Pi OS ships with the audio plugins (a2dp, avrcp, hfp, hsp)
+# enabled by default, so the controller advertises Hands-Free Audio
+# Gateway / Audio Source / Audio Sink / A/V Remote Control UUIDs.
+# Android (rightly) prefers an audio profile over NAP when both are
+# offered, treats Ragnar as a headset, and never shows the
+# "Internet access" toggle. Since Ragnar is not a media device, we
+# strip these plugins from bluetoothd so only NAP remains for phones.
+# ----------------------------------------------------------------------
+BT_MAIN_CONF=/etc/bluetooth/main.conf
+DISABLE_LIST="a2dp,avrcp,hfp,hsp"
+echo "[+] Disabling BlueZ audio plugins ($DISABLE_LIST)..."
+if [ -f "$BT_MAIN_CONF" ]; then
+  # Strip any prior managed line first so re-runs are idempotent
+  sed -i '/^# ragnar-bt-pan: disable audio plugins$/,/^DisablePlugins =/d' "$BT_MAIN_CONF" || true
+  if grep -q '^\[General\]' "$BT_MAIN_CONF"; then
+    awk -v block="# ragnar-bt-pan: disable audio plugins\nDisablePlugins = $DISABLE_LIST" '
+      /^\[General\]/ && !done { print; print block; done=1; next }
+      { print }
+    ' "$BT_MAIN_CONF" > "$BT_MAIN_CONF.new" && mv "$BT_MAIN_CONF.new" "$BT_MAIN_CONF"
+  else
+    printf '\n[General]\n# ragnar-bt-pan: disable audio plugins\nDisablePlugins = %s\n' "$DISABLE_LIST" >> "$BT_MAIN_CONF"
+  fi
+  echo "[+] Restarting bluetoothd to drop audio profiles..."
+  systemctl restart bluetooth.service
+  sleep 1
+else
+  echo "    WARNING: $BT_MAIN_CONF not found; cannot disable audio plugins" >&2
+fi
+
+# ----------------------------------------------------------------------
 # 2b. Deploy the Python pairing agent
 # ----------------------------------------------------------------------
 echo "[+] Installing Python pairing agent at $AGENT_SCRIPT..."
