@@ -1925,6 +1925,19 @@ except:
         fi
     fi
 
+    # Bluetooth PAN (phone tether for wardriving) — best-effort, never fails install
+    if [ -f "$ragnar_PATH/scripts/install_bluetooth_pan.sh" ]; then
+        log "INFO" "Installing Bluetooth-PAN service (phone tether for wardriving)..."
+        chmod +x "$ragnar_PATH/scripts/install_bluetooth_pan.sh"
+        if bash "$ragnar_PATH/scripts/install_bluetooth_pan.sh"; then
+            log "SUCCESS" "Bluetooth-PAN service installed"
+            echo -e "${GREEN}✓ Bluetooth-PAN service installed (auto-starts with wardriving)${NC}"
+        else
+            log "WARNING" "Bluetooth-PAN install reported errors"
+            echo -e "${YELLOW}⚠ Bluetooth-PAN install reported errors — run scripts/install_bluetooth_pan.sh manually to retry${NC}"
+        fi
+    fi
+
     # Git repository is preserved for updates
     # Use .gitignore to protect runtime data and configurations
     log "INFO" "Git repository preserved for future updates"

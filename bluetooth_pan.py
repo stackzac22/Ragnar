@@ -1,0 +1,124 @@
+# bluetooth_pan.py
+# Manages a Bluetooth PAN (NAP) so a phone can browse the Ragnar web UI
+# while wardriving — no Wi-Fi or internet needed.
+#
+# The actual bring-up runs in a systemd service (ragnar-bt-pan.service)
+# installed by scripts/install_bluetooth_pan.sh. This module is a thin
+# Python wrapper that lets the webapp start/stop the service and read
+# the pairing PIN for display.
+
+import logging
+import os
+import subprocess
+
+logger = logging.getLogger("BluetoothPan")
+
+SERVICE_NAME = "ragnar-bt-pan.service"
+PIN_FILE = "/etc/ragnar/bt-pan.pin"
+PAN_INTERFACE = "pan0"
+PAN_IP = "172.20.5.1"
+WEB_PORT_DEFAULT = 8000
+
+
+def _run(cmd, timeout=10):
+    """Run a command and return (rc, stdout, stderr). Never raises."""
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, r.stdout.strip(), r.stderr.strip()
+    except Exception as e:
+        return 1, "", str(e)
+
+
+def is_installed():
+    """True if the ragnar-bt-pan.service unit exists on the system."""
+    rc, _, _ = _run(["systemctl", "cat", SERVICE_NAME])
+    return rc == 0
+
+
+def is_active():
+    rc, out, _ = _run(["systemctl", "is-active", SERVICE_NAME])
+    return out == "active"
+
+
+def read_pin():
+    """Return the 6-digit pairing PIN, or None if not yet generated."""
+    try:
+        with open(PIN_FILE, "r") as f:
+            pin = f.read().strip()
+        if pin.isdigit() and 4 <= len(pin) <= 8:
+            return pin
+    except FileNotFoundError:
+        return None
+    except PermissionError:
+        # PIN file is mode 0640 root:ragnar — webapp running as ragnar should
+        # be in the group. If not, we still want the API to return gracefully.
+        return None
+    except Exception as e:
+        logger.warning(f"Could not read PIN file: {e}")
+    return None
+
+
+def connected_peers():
+    """Return the count of phones currently bridged to pan0."""
+    # `bridge fdb show br pan0` lists MAC entries. Count entries with `master pan0`
+    # excluding our own bridge MAC (`self permanent`).
+    rc, out, _ = _run(["bridge", "fdb", "show", "br", PAN_INTERFACE])
+    if rc != 0 or not out:
+        return 0
+    count = 0
+    for line in out.splitlines():
+        # External peers appear as: "aa:bb:cc:dd:ee:ff dev bnepN master pan0"
+        # The bridge's own MAC has "self permanent" on the line.
+        if "master " + PAN_INTERFACE in line and "self" not in line:
+            count += 1
+    return count
+
+
+def start():
+    """Start the systemd service. Returns dict with success/error."""
+    if not is_installed():
+        return {"success": False,
+                "error": "ragnar-bt-pan.service not installed. "
+                         "Run scripts/install_bluetooth_pan.sh as root."}
+    rc, out, err = _run(["sudo", "-n", "systemctl", "start", SERVICE_NAME], timeout=20)
+    if rc != 0:
+        return {"success": False, "error": err or out or f"systemctl exit {rc}"}
+    return {"success": True}
+
+
+def stop():
+    """Stop the systemd service. Returns dict with success/error."""
+    if not is_installed():
+        return {"success": True, "note": "not installed; nothing to stop"}
+    rc, out, err = _run(["sudo", "-n", "systemctl", "stop", SERVICE_NAME], timeout=20)
+    if rc != 0:
+        return {"success": False, "error": err or out or f"systemctl exit {rc}"}
+    return {"success": True}
+
+
+def get_status(web_port=WEB_PORT_DEFAULT):
+    """Return a dict suitable for the web UI / display layer."""
+    installed = is_installed()
+    active = is_active() if installed else False
+    pin = read_pin() if installed else None
+    peers = connected_peers() if active else 0
+    return {
+        "installed": installed,
+        "active": active,
+        "pin": pin,
+        "device_name": _device_name(),
+        "pan_ip": PAN_IP,
+        "web_url": f"http://{PAN_IP}:{web_port}" if active else None,
+        "peers": peers,
+    }
+
+
+def _device_name():
+    """Best-effort lookup of the BT adapter name (defaults to 'Ragnar')."""
+    rc, out, _ = _run(["hciconfig", "hci0", "name"])
+    if rc == 0 and out:
+        for line in out.splitlines():
+            line = line.strip()
+            if line.startswith("Name: "):
+                return line[len("Name: "):].strip("'\"")
+    return "Ragnar"

@@ -1365,6 +1365,15 @@ class Display:
         stats_bottom = [
             ("Bluetooth", str(st.get('bluetooth_devices', 0))),
         ]
+        # Bluetooth-PAN pairing PIN — shown only while the phone-tether bridge
+        # is active so the user can read it off the e-paper at pairing time.
+        try:
+            import bluetooth_pan as _btp
+            btp = _btp.get_status()
+            if btp.get('active') and btp.get('pin'):
+                stats_bottom.append(("BT PIN", btp['pin']))
+        except Exception:
+            pass
         if st.get('cell_towers', 0) > 0:
             stats_bottom.append(("Cell", str(st.get('cell_towers', 0))))
         if st.get('cameras', 0) > 0:

@@ -6457,6 +6457,17 @@ def wardriving_start():
         engine = _get_wardriving_engine()
         engine.scan_interval = shared_data.config.get('wardriving_scan_interval', 2)
         result = engine.start(interfaces=interfaces, gps_port=gps_port)
+        # Auto-start Bluetooth PAN so a phone can browse the UI without WiFi.
+        # Best-effort: failure to bring up BT must not fail the wardriving start.
+        if result.get('success') and shared_data.config.get('wardriving_bt_pan_autostart', True):
+            try:
+                import bluetooth_pan
+                if bluetooth_pan.is_installed() and not bluetooth_pan.is_active():
+                    bt_result = bluetooth_pan.start()
+                    if not bt_result.get('success'):
+                        logger.warning(f"BT PAN autostart failed: {bt_result.get('error')}")
+            except Exception as bt_exc:
+                logger.warning(f"BT PAN autostart exception: {bt_exc}")
         return jsonify(result)
     except Exception as e:
         logger.error(f"Wardriving start error: {e}")
@@ -6468,10 +6479,53 @@ def wardriving_stop():
     try:
         engine = _get_wardriving_engine()
         result = engine.stop()
+        # Tear down the BT PAN alongside the wardriving session.
+        if shared_data.config.get('wardriving_bt_pan_autostart', True):
+            try:
+                import bluetooth_pan
+                if bluetooth_pan.is_installed() and bluetooth_pan.is_active():
+                    bluetooth_pan.stop()
+            except Exception as bt_exc:
+                logger.warning(f"BT PAN stop exception: {bt_exc}")
         return jsonify(result)
     except Exception as e:
         logger.error(f"Wardriving stop error: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/bluetooth-pan/status')
+def bluetooth_pan_status():
+    """Return the current state of the Bluetooth-PAN bridge."""
+    try:
+        import bluetooth_pan
+        return jsonify(bluetooth_pan.get_status())
+    except Exception as e:
+        logger.error(f"Bluetooth PAN status error: {e}")
+        return jsonify({'error': str(e), 'installed': False, 'active': False}), 500
+
+
+@app.route('/api/bluetooth-pan/start', methods=['POST'])
+def bluetooth_pan_start():
+    """Manually start the Bluetooth-PAN service."""
+    try:
+        import bluetooth_pan
+        result = bluetooth_pan.start()
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Bluetooth PAN start error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/bluetooth-pan/stop', methods=['POST'])
+def bluetooth_pan_stop():
+    """Manually stop the Bluetooth-PAN service."""
+    try:
+        import bluetooth_pan
+        result = bluetooth_pan.stop()
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Bluetooth PAN stop error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/wardriving/networks')
 def wardriving_networks():

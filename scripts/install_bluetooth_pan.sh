@@ -1,0 +1,214 @@
+#!/bin/bash
+# install_bluetooth_pan.sh
+#
+# Installs the Ragnar Bluetooth-PAN (NAP) service so a phone can pair with
+# the Pi over Bluetooth and browse the Ragnar web UI without any Wi-Fi or
+# internet. The runtime helper, systemd unit, and sudoers rules are written
+# here; the Python wrapper lives in bluetooth_pan.py.
+
+set -e
+
+if [ "$EUID" -ne 0 ]; then
+  echo "Must be run as root (use sudo)." >&2
+  exit 1
+fi
+
+RAGNAR_USER="${RAGNAR_USER:-ragnar}"
+RAGNAR_GROUP="${RAGNAR_GROUP:-ragnar}"
+DEVICE_NAME="${RAGNAR_BT_NAME:-Ragnar}"
+
+PIN_DIR=/etc/ragnar
+PIN_FILE="$PIN_DIR/bt-pan.pin"
+RUNTIME_SCRIPT=/usr/local/sbin/ragnar-bt-pan
+SERVICE_FILE=/etc/systemd/system/ragnar-bt-pan.service
+SUDOERS_FILE=/etc/sudoers.d/ragnar-bt-pan
+
+# ----------------------------------------------------------------------
+# 1. Packages
+# ----------------------------------------------------------------------
+echo "[+] Installing packages..."
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y --no-install-recommends \
+  bluez bluez-tools bridge-utils dnsmasq-base iproute2
+
+# ----------------------------------------------------------------------
+# 2. PIN
+# ----------------------------------------------------------------------
+echo "[+] Generating pairing PIN..."
+mkdir -p "$PIN_DIR"
+chown root:"$RAGNAR_GROUP" "$PIN_DIR"
+chmod 0750 "$PIN_DIR"
+
+if [ ! -s "$PIN_FILE" ]; then
+  # 6 random digits
+  PIN=$(awk 'BEGIN{srand(); printf "%06d\n", int(rand()*1000000)}')
+  echo "$PIN" > "$PIN_FILE"
+fi
+chown root:"$RAGNAR_GROUP" "$PIN_FILE"
+chmod 0640 "$PIN_FILE"
+PIN=$(cat "$PIN_FILE")
+echo "    pairing PIN: $PIN"
+
+# ----------------------------------------------------------------------
+# 3. Runtime helper script (does the bring-up; systemd runs this)
+# ----------------------------------------------------------------------
+echo "[+] Writing runtime helper $RUNTIME_SCRIPT..."
+cat > "$RUNTIME_SCRIPT" <<'RUNTIME_EOF'
+#!/bin/bash
+# /usr/local/sbin/ragnar-bt-pan
+#
+# Brings up a Bluetooth PAN (NAP) on pan0 (172.20.5.1/24), runs a PIN-based
+# pairing agent, and serves DHCP via a dedicated dnsmasq instance.
+# No NAT, no DNS upstream — phone gets an IP and can reach the Ragnar
+# web UI at http://172.20.5.1:8000 but cannot route anywhere else.
+#
+# Invoked by ragnar-bt-pan.service.
+set -e
+
+PAN_IFACE=pan0
+PAN_IP=172.20.5.1
+PAN_NET=24
+DHCP_START=172.20.5.10
+DHCP_END=172.20.5.50
+
+PIN_FILE=/etc/ragnar/bt-pan.pin
+DEVICE_NAME="${RAGNAR_BT_NAME:-Ragnar}"
+
+RUN_DIR=/run/ragnar-bt-pan
+mkdir -p "$RUN_DIR"
+
+PINDB="$RUN_DIR/pins"
+DNSMASQ_CONF="$RUN_DIR/dnsmasq.conf"
+
+cleanup() {
+  echo "[ragnar-bt-pan] tearing down"
+  jobs -p | xargs -r kill 2>/dev/null || true
+  # bluetoothctl: stop advertising
+  bluetoothctl <<EOF >/dev/null 2>&1 || true
+discoverable off
+pairable off
+EOF
+  ip link set "$PAN_IFACE" down 2>/dev/null || true
+  ip link delete "$PAN_IFACE" 2>/dev/null || true
+}
+trap cleanup TERM INT EXIT
+
+# ---- kernel + bridge ----------------------------------------------
+modprobe bnep || true
+
+if ! ip link show "$PAN_IFACE" >/dev/null 2>&1; then
+  ip link add name "$PAN_IFACE" type bridge
+fi
+ip addr flush dev "$PAN_IFACE" || true
+ip addr add "$PAN_IP/$PAN_NET" dev "$PAN_IFACE"
+ip link set "$PAN_IFACE" up
+
+# ---- PIN agent setup ----------------------------------------------
+PIN=$(cat "$PIN_FILE" 2>/dev/null || true)
+if ! [[ "$PIN" =~ ^[0-9]{4,8}$ ]]; then
+  PIN=$(awk 'BEGIN{srand(); printf "%06d\n", int(rand()*1000000)}')
+  echo "$PIN" > "$PIN_FILE"
+  chmod 0640 "$PIN_FILE"
+fi
+# bt-agent --pin file syntax: "<bdaddr|*> <pin>"
+umask 077
+echo "* $PIN" > "$PINDB"
+
+# ---- bluetooth adapter --------------------------------------------
+hciconfig hci0 up || true
+hciconfig hci0 name "$DEVICE_NAME" || true
+hciconfig hci0 sspmode 1 || true
+hciconfig hci0 piscan || true
+
+bluetoothctl <<EOF >/dev/null 2>&1 || true
+power on
+agent off
+discoverable on
+pairable on
+EOF
+
+# Kill any stray helpers from previous runs
+pkill -f 'bt-agent.*ragnar-bt-pan' 2>/dev/null || true
+pkill -f 'bt-network.*-s nap' 2>/dev/null || true
+
+# ---- PIN agent (phone enters the PIN we display) ------------------
+bt-agent --capability=DisplayOnly --pin="$PINDB" &
+AGENT_PID=$!
+
+# ---- PAN/NAP server -----------------------------------------------
+sleep 0.5
+bt-network -s nap "$PAN_IFACE" &
+NETWORK_PID=$!
+
+# ---- dnsmasq (DHCP only, no DNS, bound to pan0) -------------------
+cat > "$DNSMASQ_CONF" <<EOF
+interface=$PAN_IFACE
+bind-interfaces
+dhcp-range=$DHCP_START,$DHCP_END,255.255.255.0,1h
+no-resolv
+port=0
+log-dhcp
+EOF
+dnsmasq --conf-file="$DNSMASQ_CONF" --keep-in-foreground &
+DNSMASQ_PID=$!
+
+echo "[ragnar-bt-pan] up: name=$DEVICE_NAME ip=$PAN_IP/$PAN_NET pin=$PIN"
+
+# Wait until any child exits — systemd then restarts us
+wait -n $AGENT_PID $NETWORK_PID $DNSMASQ_PID
+RUNTIME_EOF
+chmod 0755 "$RUNTIME_SCRIPT"
+
+# ----------------------------------------------------------------------
+# 4. Systemd unit
+# ----------------------------------------------------------------------
+echo "[+] Writing $SERVICE_FILE..."
+cat > "$SERVICE_FILE" <<EOF
+[Unit]
+Description=Ragnar Bluetooth PAN (NAP) for phone web access
+After=bluetooth.service network.target
+Requires=bluetooth.service
+
+[Service]
+Type=simple
+Environment=RAGNAR_BT_NAME=$DEVICE_NAME
+ExecStart=$RUNTIME_SCRIPT
+Restart=on-failure
+RestartSec=3
+KillMode=mixed
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# ----------------------------------------------------------------------
+# 5. Sudoers (let ragnar start/stop the service, nothing else)
+# ----------------------------------------------------------------------
+echo "[+] Writing sudoers rules $SUDOERS_FILE..."
+cat > "$SUDOERS_FILE" <<EOF
+# Ragnar Bluetooth PAN: allow the ragnar user to toggle the unit only.
+$RAGNAR_USER ALL=(root) NOPASSWD: /usr/bin/systemctl start ragnar-bt-pan.service
+$RAGNAR_USER ALL=(root) NOPASSWD: /usr/bin/systemctl stop ragnar-bt-pan.service
+$RAGNAR_USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart ragnar-bt-pan.service
+EOF
+chmod 0440 "$SUDOERS_FILE"
+
+# ----------------------------------------------------------------------
+# 6. Reload systemd. Do NOT enable on boot — wardriving controls lifecycle.
+# ----------------------------------------------------------------------
+systemctl daemon-reload
+
+echo
+echo "[OK] ragnar-bt-pan installed."
+echo "    PIN:         $PIN  (stored in $PIN_FILE)"
+echo "    Device name: $DEVICE_NAME"
+echo "    Pi IP:       172.20.5.1  (after phone joins via Bluetooth PAN)"
+echo "    Web URL:     http://172.20.5.1:8000"
+echo
+echo "    The service is NOT enabled on boot — it starts automatically when"
+echo "    wardriving starts (and stops when wardriving stops). You can also"
+echo "    flip it manually:"
+echo "      sudo systemctl start  ragnar-bt-pan"
+echo "      sudo systemctl stop   ragnar-bt-pan"

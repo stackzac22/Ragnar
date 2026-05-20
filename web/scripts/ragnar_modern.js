@@ -14874,8 +14874,35 @@ function updateWardrivingUI(status) {
     // WiFi Adapters status bar
     _renderWifiAdaptersBar(status);
 
+    // Bluetooth-PAN tether bar (independent endpoint — fire-and-forget)
+    _refreshBluetoothPanBar();
+
     // Serial ESP32 config card
     updateSerialStatus(status);
+}
+
+async function _refreshBluetoothPanBar() {
+    const bar = document.getElementById('wd-btpan-bar');
+    if (!bar) return;
+    try {
+        const res = await fetch('/api/bluetooth-pan/status');
+        const s = await res.json();
+        if (!s || !s.active) {
+            bar.classList.add('hidden');
+            return;
+        }
+        bar.classList.remove('hidden');
+        const nameEl = document.getElementById('wd-btpan-name');
+        const pinEl = document.getElementById('wd-btpan-pin');
+        const urlEl = document.getElementById('wd-btpan-url');
+        const peersEl = document.getElementById('wd-btpan-peers');
+        if (nameEl) nameEl.textContent = s.device_name || 'Ragnar';
+        if (pinEl) pinEl.textContent = s.pin || '------';
+        if (urlEl) urlEl.textContent = s.web_url || `http://${s.pan_ip}:8000`;
+        if (peersEl) peersEl.textContent = String(s.peers || 0);
+    } catch (e) {
+        bar.classList.add('hidden');
+    }
 }
 
 function _renderWifiAdaptersBar(status) {
