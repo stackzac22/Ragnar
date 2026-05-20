@@ -6375,23 +6375,45 @@ def _get_power_health():
     ever_capped           = bool(thr & 0x20000)
     ever_throttled        = bool(thr & 0x40000)
 
+    # Power-warning logic, tuned against real Pi 5 behaviour:
+    #
+    # - The Pi 5 firmware sets bit 0x1 ("undervolted") whenever a USB-PD
+    #   supply did NOT negotiate the 5A/5V profile that the Pi prefers, even
+    #   if the actual measured voltage is fine. A 30 W wall adapter that
+    #   only advertises 3 A trips this bit despite delivering plenty of
+    #   headroom for any wardriving workload. We therefore require BOTH
+    #   the bit AND a low EXT5V reading to escalate to 'critical'.
+    # - The 'ever' bits latch on the first millisecond dip (USB enumeration,
+    #   WiFi adapter init) and never clear. They were generating a noisy
+    #   "Undervoltage has occurred since boot" banner that the user can't
+    #   action. Dropped — only the live state is surfaced.
+    # - The 'info' status is for the PD-not-5A case where everything is
+    #   fine but the supply isn't the official 27 W Pi 5 brick.
     status = 'ok'
     message = None
-    if currently_undervolted or currently_throttled:
+    if currently_throttled:
+        # 0x4: thermal or voltage throttling active right NOW — definitive.
         status = 'critical'
-        if currently_undervolted:
-            message = f"Pi is undervolted right now ({ext5v:.2f} V at input)" if ext5v else "Pi is undervolted right now"
-        else:
-            message = "Pi is currently throttling"
-    elif ext5v is not None and ext5v < 4.70:
+        message = "Pi is throttling — clock speed reduced under load"
+    elif currently_undervolted and ext5v is not None and ext5v < 4.75:
+        # Bit and voltage both agree — real undervoltage.
         status = 'critical'
-        message = f"Input voltage low ({ext5v:.2f} V) — close to undervoltage trip, USB devices may fail to enumerate"
-    elif ext5v is not None and ext5v < 4.80:
+        message = (f"Undervoltage ({ext5v:.2f} V at input) — your power supply "
+                   "or USB-C cable is inadequate under load")
+    elif currently_undervolted:
+        # Bit set, voltage acceptable: PD didn't negotiate 5A. Working fine.
+        v_txt = f" ({ext5v:.2f} V)" if ext5v is not None else ""
+        status = 'info'
+        message = ("Power supply is in conservative mode — the Pi did not "
+                   f"negotiate a 5A USB-PD profile{v_txt}. Voltage is fine; "
+                   "use the official Pi 5 27 W PSU for full headroom.")
+    elif ext5v is not None and ext5v < 4.65:
+        status = 'critical'
+        message = f"Input voltage critical ({ext5v:.2f} V) — undervoltage imminent"
+    elif ext5v is not None and ext5v < 4.75:
         status = 'warning'
-        message = f"Input voltage marginal ({ext5v:.2f} V) — consider a higher-output USB-PD powerbank"
-    elif ever_undervolted or ever_throttled:
-        status = 'warning'
-        message = "Undervoltage / throttling has occurred since boot — power supply may be inadequate under load"
+        message = (f"Input voltage low ({ext5v:.2f} V) — supply or cable "
+                   "marginal under load")
 
     value = {
         'available': True,

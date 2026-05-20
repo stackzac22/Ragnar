@@ -14717,14 +14717,15 @@ function updateWardrivingUI(status) {
         const p = status.power;
         if (p && p.status && p.status !== 'ok' && p.message) {
             powerEl.classList.remove('hidden');
-            const isCritical = p.status === 'critical';
-            powerEl.className = 'mb-4 px-4 py-3 rounded-lg border flex items-start gap-3 ' +
-                (isCritical
-                    ? 'bg-red-900/30 border-red-500/50 text-red-200'
-                    : 'bg-yellow-900/30 border-yellow-500/50 text-yellow-200');
+            const tone = {
+                critical: { box: 'bg-red-900/30 border-red-500/50 text-red-200',     title: 'Power supply critical' },
+                warning:  { box: 'bg-yellow-900/30 border-yellow-500/50 text-yellow-200', title: 'Power supply marginal' },
+                info:     { box: 'bg-sky-900/20 border-sky-500/40 text-sky-200',     title: 'Power supply note' },
+            }[p.status] || { box: 'bg-sky-900/20 border-sky-500/40 text-sky-200', title: 'Power supply note' };
+            powerEl.className = 'mb-4 px-4 py-3 rounded-lg border flex items-start gap-3 ' + tone.box;
             const titleEl = document.getElementById('wd-power-warning-title');
             const msgEl = document.getElementById('wd-power-warning-msg');
-            if (titleEl) titleEl.textContent = isCritical ? 'Power supply critical' : 'Power supply marginal';
+            if (titleEl) titleEl.textContent = tone.title;
             if (msgEl) msgEl.textContent = p.message;
         } else {
             powerEl.classList.add('hidden');
