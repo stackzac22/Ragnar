@@ -133,11 +133,6 @@ hciconfig hci0 up || true
 hciconfig hci0 name "$DEVICE_NAME" || true
 hciconfig hci0 sspmode 1 || true
 hciconfig hci0 piscan || true
-# Force Class of Device to "Networking → LAN/NAP" so Android shows the
-# "Internet access" toggle instead of audio-headset options. BlueZ otherwise
-# OR-s in audio service bits from loaded plugins and the result lands in
-# the Audio/Video major class, which makes Android think we are a headset.
-hciconfig hci0 class 0x020300 || true
 
 bluetoothctl <<EOF >/dev/null 2>&1 || true
 power on
@@ -169,6 +164,15 @@ AGENT_PID=$!
 sleep 0.5
 bt-network -s nap "$PAN_IFACE" &
 NETWORK_PID=$!
+
+# Force Class of Device to "Networking → LAN/NAP" *after* bt-network has
+# registered the NAP service. When bt-network starts, BlueZ OR-s in audio
+# service bits from the still-loaded audio plugins, leaving the major
+# class as Audio/Video — which makes Android display Ragnar as a headset
+# with no "Internet access" toggle. Setting the class after the service
+# is up overrides BlueZ's auto-computed value and sticks.
+sleep 1
+hciconfig hci0 class 0x020300 || true
 
 # ---- dnsmasq (DHCP only, no DNS, bound to pan0) -------------------
 cat > "$DNSMASQ_CONF" <<EOF
