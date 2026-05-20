@@ -1365,13 +1365,20 @@ class Display:
         stats_bottom = [
             ("Bluetooth", str(st.get('bluetooth_devices', 0))),
         ]
-        # Bluetooth-PAN pairing PIN — shown only while the phone-tether bridge
-        # is active so the user can read it off the e-paper at pairing time.
+        # Bluetooth-PAN phone-tether status.
+        # While the bridge is up, the row shows either:
+        #   * "BT PIN" + the live 6-digit SSP passkey while a pair is in flight
+        #     (matches the code the phone shows; user just taps "Pair" to confirm)
+        #   * "BT" + the adapter name (e.g. "Ragnar") otherwise, so the user
+        #     knows what to look for in their phone's Bluetooth scan.
         try:
             import bluetooth_pan as _btp
             btp = _btp.get_status()
-            if btp.get('active') and btp.get('pin'):
-                stats_bottom.append(("BT PIN", btp['pin']))
+            if btp.get('active'):
+                if btp.get('pin'):
+                    stats_bottom.append(("BT PIN", btp['pin']))
+                else:
+                    stats_bottom.append(("BT", btp.get('device_name') or 'Ragnar'))
         except Exception:
             pass
         if st.get('cell_towers', 0) > 0:

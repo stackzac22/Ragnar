@@ -3812,13 +3812,14 @@
                     <span id="wd-esp-alerts" class="hidden text-xs font-bold text-red-400 ml-2"></span>
                 </div>
 
-                <!-- Bluetooth PAN status (shown when phone-tether bridge is active) -->
+                <!-- Bluetooth PAN status (shown when phone-tether bridge is active).
+                     Android only — iOS does not expose a Bluetooth IP interface. -->
                 <div id="wd-btpan-bar" class="hidden bg-sky-900/30 border border-sky-700 rounded-lg px-4 py-2 mb-4 flex items-center gap-3 flex-wrap">
-                    <span class="text-xs font-bold text-sky-300">📱 BT Tether</span>
-                    <span class="text-xs text-gray-400">Pair with</span>
+                    <span class="text-xs font-bold text-sky-300">📱 BT Tether (Android)</span>
+                    <span class="text-xs text-gray-400">Pair</span>
                     <span id="wd-btpan-name" class="text-xs font-bold text-white">Ragnar</span>
-                    <span class="text-xs text-gray-400">— PIN</span>
-                    <span id="wd-btpan-pin" class="text-sm font-mono font-bold text-amber-300 tracking-widest">------</span>
+                    <span class="text-xs text-gray-400">— code</span>
+                    <span id="wd-btpan-pin" class="text-sm font-mono font-bold text-gray-500 tracking-widest">tap Pair on phone</span>
                     <span class="text-xs text-gray-400">then browse to</span>
                     <span id="wd-btpan-url" class="text-xs font-mono text-emerald-300">http://172.20.5.1:8000</span>
                     <span class="text-xs text-gray-500 ml-2">|</span>

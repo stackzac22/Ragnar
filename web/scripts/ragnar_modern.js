@@ -14898,9 +14898,21 @@ async function _refreshBluetoothPanBar() {
         const urlEl = document.getElementById('wd-btpan-url');
         const peersEl = document.getElementById('wd-btpan-peers');
         if (nameEl) nameEl.textContent = s.device_name || 'Ragnar';
-        if (pinEl) pinEl.textContent = s.pin || '------';
         if (urlEl) urlEl.textContent = s.web_url || `http://${s.pan_ip}:8000`;
         if (peersEl) peersEl.textContent = String(s.peers || 0);
+        if (pinEl) {
+            // SSP passkey is dynamic and only valid during an active pair
+            // handshake. While idle, prompt the user to initiate pairing.
+            if (s.pin) {
+                pinEl.textContent = s.pin;
+                pinEl.classList.remove('text-gray-500');
+                pinEl.classList.add('text-amber-300');
+            } else {
+                pinEl.textContent = 'tap Pair on phone';
+                pinEl.classList.remove('text-amber-300');
+                pinEl.classList.add('text-gray-500');
+            }
+        }
     } catch (e) {
         bar.classList.add('hidden');
     }

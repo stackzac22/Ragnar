@@ -14,6 +14,11 @@ import subprocess
 logger = logging.getLogger("BluetoothPan")
 
 SERVICE_NAME = "ragnar-bt-pan.service"
+# Live SSP passkey written by ragnar_bt_agent.py at pair time. Volatile —
+# only present during an active pairing window.
+LIVE_PASSKEY_FILE = "/run/ragnar-bt-pan/current-passkey"
+# Static fallback PIN used only by legacy (pre-SSP 2.1) devices, which
+# nobody actually owns any more. Kept for safety, not for the e-paper UX.
 PIN_FILE = "/etc/ragnar/bt-pan.pin"
 PAN_INTERFACE = "pan0"
 PAN_IP = "172.20.5.1"
@@ -47,20 +52,29 @@ def is_active():
 
 
 def read_pin():
-    """Return the 6-digit pairing PIN, or None if not yet generated."""
+    """Return the *live* pairing passkey if a pair is currently in flight.
+
+    The Python agent writes the SSP-derived passkey to LIVE_PASSKEY_FILE
+    when BlueZ calls DisplayPasskey or RequestConfirmation, and clears it
+    on completion / cancellation. Returns:
+      * 6-digit code: a pair is in progress — confirm this matches the
+                      number your phone shows, then tap Pair on the phone
+      * None:         no active pairing (phone hasn't requested one yet,
+                      or the bond already exists and reconnect is automatic)
+
+    The static PIN_FILE is intentionally NOT used here — it only applies
+    to pre-SSP 2.1 devices, and modern phones ignore it. Showing it would
+    mislead the user into typing a code their phone never asked for.
+    """
     try:
-        with open(PIN_FILE, "r") as f:
-            pin = f.read().strip()
-        if pin.isdigit() and 4 <= len(pin) <= 8:
-            return pin
+        with open(LIVE_PASSKEY_FILE, "r") as f:
+            v = f.read().strip()
+        if v.isdigit() and 4 <= len(v) <= 8:
+            return v
     except FileNotFoundError:
         return None
-    except PermissionError:
-        # PIN file is mode 0640 root:ragnar — webapp running as ragnar should
-        # be in the group. If not, we still want the API to return gracefully.
-        return None
     except Exception as e:
-        logger.warning(f"Could not read PIN file: {e}")
+        logger.warning(f"Could not read live passkey: {e}")
     return None
 
 

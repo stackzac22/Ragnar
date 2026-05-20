@@ -182,6 +182,21 @@ class Ragnar:
             # Store reference so webapp can find it
             import webapp_modern
             webapp_modern._wardriving_engine = self._wd_engine
+            # Bring up the Bluetooth-PAN bridge so a phone can browse the UI
+            # without WiFi. Mirrors the auto-start in the /api/wardriving/start
+            # endpoint — needed here because the boot path bypasses Flask.
+            if (result and result.get('success')
+                    and self.shared_data.config.get('wardriving_bt_pan_autostart', True)):
+                try:
+                    import bluetooth_pan
+                    if bluetooth_pan.is_installed() and not bluetooth_pan.is_active():
+                        bt_result = bluetooth_pan.start()
+                        if not bt_result.get('success'):
+                            logger.warning(
+                                f"BT PAN autostart failed: {bt_result.get('error')}"
+                            )
+                except Exception as bt_exc:
+                    logger.warning(f"BT PAN autostart exception: {bt_exc}")
         except Exception as e:
             logger.error(f"Failed to auto-start wardriving on boot: {e}")
 

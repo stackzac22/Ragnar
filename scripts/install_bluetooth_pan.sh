@@ -20,6 +20,8 @@ DEVICE_NAME="${RAGNAR_BT_NAME:-Ragnar}"
 PIN_DIR=/etc/ragnar
 PIN_FILE="$PIN_DIR/bt-pan.pin"
 RUNTIME_SCRIPT=/usr/local/sbin/ragnar-bt-pan
+AGENT_SCRIPT=/usr/local/sbin/ragnar_bt_agent.py
+AGENT_SRC="$(dirname "$(readlink -f "$0")")/ragnar_bt_agent.py"
 SERVICE_FILE=/etc/systemd/system/ragnar-bt-pan.service
 SUDOERS_FILE=/etc/sudoers.d/ragnar-bt-pan
 
@@ -30,7 +32,8 @@ echo "[+] Installing packages..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y --no-install-recommends \
-  bluez bluez-tools bridge-utils dnsmasq-base iproute2
+  bluez bluez-tools bridge-utils dnsmasq-base iproute2 \
+  python3-dbus python3-gi
 
 # ----------------------------------------------------------------------
 # 2. PIN
@@ -49,6 +52,16 @@ chown root:"$RAGNAR_GROUP" "$PIN_FILE"
 chmod 0640 "$PIN_FILE"
 PIN=$(cat "$PIN_FILE")
 echo "    pairing PIN: $PIN"
+
+# ----------------------------------------------------------------------
+# 2b. Deploy the Python pairing agent
+# ----------------------------------------------------------------------
+echo "[+] Installing Python pairing agent at $AGENT_SCRIPT..."
+if [ -f "$AGENT_SRC" ]; then
+  install -m 0755 "$AGENT_SRC" "$AGENT_SCRIPT"
+else
+  echo "    WARNING: $AGENT_SRC not found — pairing will fall back to static PIN" >&2
+fi
 
 # ----------------------------------------------------------------------
 # 3. Runtime helper script (does the bring-up; systemd runs this)
@@ -130,10 +143,21 @@ EOF
 
 # Kill any stray helpers from previous runs
 pkill -f 'bt-agent.*ragnar-bt-pan' 2>/dev/null || true
+pkill -f 'ragnar_bt_agent' 2>/dev/null || true
 pkill -f 'bt-network.*-s nap' 2>/dev/null || true
 
-# ---- PIN agent (phone enters the PIN we display) ------------------
-bt-agent --capability=DisplayOnly --pin="$PINDB" &
+# ---- Custom Python pairing agent ----------------------------------
+# Uses DisplayYesNo capability so SSP negotiates Numeric Comparison with
+# modern phones, and writes the live per-pair passkey to
+# /run/ragnar-bt-pan/current-passkey so the e-paper / web banner can
+# show the correct code. Falls back to legacy bt-agent if Python agent
+# is missing for some reason.
+if [ -x /usr/local/sbin/ragnar_bt_agent.py ]; then
+  /usr/local/sbin/ragnar_bt_agent.py &
+else
+  echo "[ragnar-bt-pan] Python agent missing, falling back to bt-agent (static PIN, may not work on modern phones)"
+  bt-agent --capability=DisplayOnly --pin="$PINDB" &
+fi
 AGENT_PID=$!
 
 # ---- PAN/NAP server -----------------------------------------------
