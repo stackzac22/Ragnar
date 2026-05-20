@@ -19,6 +19,12 @@ PAN_INTERFACE = "pan0"
 PAN_IP = "172.20.5.1"
 WEB_PORT_DEFAULT = 8000
 
+INSTALLER_PATH_CANDIDATES = (
+    "/home/ragnar/Ragnar/scripts/install_bluetooth_pan.sh",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 "scripts", "install_bluetooth_pan.sh"),
+)
+
 
 def _run(cmd, timeout=10):
     """Run a command and return (rc, stdout, stderr). Never raises."""
@@ -74,12 +80,47 @@ def connected_peers():
     return count
 
 
+def _find_installer():
+    for p in INSTALLER_PATH_CANDIDATES:
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def ensure_installed():
+    """If the systemd unit is missing, run the installer via sudo.
+
+    Returns a dict with `installed` (final state) and optionally `error`.
+    Requires the bootstrap sudoers entry (which install_ragnar.sh / the
+    first manual run of the installer creates).
+    """
+    if is_installed():
+        return {"installed": True}
+    installer = _find_installer()
+    if not installer:
+        return {"installed": False,
+                "error": "install_bluetooth_pan.sh not found in Ragnar checkout"}
+    logger.info(f"BT PAN not installed — running {installer} via sudo")
+    rc, out, err = _run(["sudo", "-n", "/bin/bash", installer], timeout=180)
+    if rc != 0:
+        return {"installed": False,
+                "error": (err or out or f"installer exit {rc}").strip()[:500]}
+    # systemctl needs a daemon-reload moment; is_installed re-queries unit files
+    return {"installed": is_installed()}
+
+
 def start():
     """Start the systemd service. Returns dict with success/error."""
     if not is_installed():
-        return {"success": False,
-                "error": "ragnar-bt-pan.service not installed. "
-                         "Run scripts/install_bluetooth_pan.sh as root."}
+        # Try to self-heal — auto-install on first wardriving start so the
+        # user doesn't have to run a separate script.
+        ensure = ensure_installed()
+        if not ensure.get("installed"):
+            return {"success": False,
+                    "error": ensure.get("error") or
+                             "ragnar-bt-pan.service not installed and "
+                             "auto-install failed. Run "
+                             "`sudo bash scripts/install_bluetooth_pan.sh`."}
     rc, out, err = _run(["sudo", "-n", "systemctl", "start", SERVICE_NAME], timeout=20)
     if rc != 0:
         return {"success": False, "error": err or out or f"systemctl exit {rc}"}

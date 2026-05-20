@@ -100,6 +100,25 @@ chmod +x "$ragnar_PATH/kill_port_8000.sh" 2>/dev/null || true
 chmod +x "$ragnar_PATH/scripts/update_ragnar.sh" 2>/dev/null || true
 chmod +x "$ragnar_PATH/scripts/"*.sh 2>/dev/null || true
 
+echo -e "${BLUE}Step 6.4: Installing Bluetooth-PAN service (phone tether for wardriving)...${NC}"
+BTPAN_INSTALLER="$ragnar_PATH/scripts/install_bluetooth_pan.sh"
+BTPAN_UNIT="/etc/systemd/system/ragnar-bt-pan.service"
+if [ -f "$BTPAN_INSTALLER" ]; then
+    if [ ! -f "$BTPAN_UNIT" ]; then
+        echo -e "${YELLOW}Bluetooth-PAN not yet installed — running installer...${NC}"
+        chmod +x "$BTPAN_INSTALLER"
+        if bash "$BTPAN_INSTALLER"; then
+            echo -e "${GREEN}✓ Bluetooth-PAN installed${NC}"
+        else
+            echo -e "${YELLOW}⚠ Bluetooth-PAN install reported errors — wardriving still works without it${NC}"
+        fi
+    else
+        echo -e "${GREEN}Bluetooth-PAN already installed.${NC}"
+    fi
+else
+    echo -e "${YELLOW}install_bluetooth_pan.sh not found, skipping.${NC}"
+fi
+
 echo -e "${BLUE}Step 6.5: Validating actions.json configuration...${NC}"
 python3 << 'PYTHON_EOF'
 import json

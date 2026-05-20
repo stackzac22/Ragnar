@@ -187,11 +187,14 @@ EOF
 # 5. Sudoers (let ragnar start/stop the service, nothing else)
 # ----------------------------------------------------------------------
 echo "[+] Writing sudoers rules $SUDOERS_FILE..."
+RAGNAR_HOME="/home/$RAGNAR_USER/Ragnar"
 cat > "$SUDOERS_FILE" <<EOF
-# Ragnar Bluetooth PAN: allow the ragnar user to toggle the unit only.
+# Ragnar Bluetooth PAN: allow the ragnar user to toggle the unit and to re-run
+# the installer (self-heal if something on the system gets out of sync).
 $RAGNAR_USER ALL=(root) NOPASSWD: /usr/bin/systemctl start ragnar-bt-pan.service
 $RAGNAR_USER ALL=(root) NOPASSWD: /usr/bin/systemctl stop ragnar-bt-pan.service
 $RAGNAR_USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart ragnar-bt-pan.service
+$RAGNAR_USER ALL=(root) NOPASSWD: /bin/bash $RAGNAR_HOME/scripts/install_bluetooth_pan.sh
 EOF
 chmod 0440 "$SUDOERS_FILE"
 
