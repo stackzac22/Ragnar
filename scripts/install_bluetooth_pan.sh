@@ -133,6 +133,11 @@ hciconfig hci0 up || true
 hciconfig hci0 name "$DEVICE_NAME" || true
 hciconfig hci0 sspmode 1 || true
 hciconfig hci0 piscan || true
+# Force Class of Device to "Networking → LAN/NAP" so Android shows the
+# "Internet access" toggle instead of audio-headset options. BlueZ otherwise
+# OR-s in audio service bits from loaded plugins and the result lands in
+# the Audio/Video major class, which makes Android think we are a headset.
+hciconfig hci0 class 0x020300 || true
 
 bluetoothctl <<EOF >/dev/null 2>&1 || true
 power on
