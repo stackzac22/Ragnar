@@ -17088,7 +17088,7 @@ async function loadAdvancedVulnData() {
         }
 
         hideAdvVulnNotAvailable();
-        updateScannerStatus(data.scanners);
+        updateScannerStatus(data.scanners, data.nuclei_templates);
         updateVulnSummary(data.summary);
 
         // Parse findings (already fetched in parallel)
@@ -17645,8 +17645,12 @@ function hideAdvVulnNotAvailable() {
     if (notice) notice.classList.add('hidden');
 }
 
-function updateScannerStatus(scanners) {
+function updateScannerStatus(scanners, nucleiTemplates) {
     if (!scanners) return;
+
+    // Cache so the nuclei template card can be re-rendered after a manual update
+    advVulnScannersStatusCache = scanners;
+    if (nucleiTemplates !== undefined) advVulnNucleiTemplatesCache = nucleiTemplates;
 
     const scannerIds = ['nuclei', 'nikto', 'sqlmap', 'nmap_vuln', 'whatweb', 'zap'];
 
@@ -17656,7 +17660,9 @@ function updateScannerStatus(scanners) {
 
         if (statusEl) {
             const available = scanners[id];
-            if (id === 'zap') {
+            if (id === 'nuclei') {
+                updateNucleiCardStatus(statusEl, available, advVulnNucleiTemplatesCache);
+            } else if (id === 'zap') {
                 // ZAP has special status (installed vs running)
                 if (scanners.zap_running) {
                     statusEl.textContent = 'Running';
@@ -17702,6 +17708,70 @@ function updateScannerStatus(scanners) {
         } else {
             browserWarning.classList.add('hidden');
         }
+    }
+}
+
+let advVulnScannersStatusCache = null;
+let advVulnNucleiTemplatesCache = null;
+
+function updateNucleiCardStatus(statusEl, available, templates) {
+    statusEl.classList.remove('text-green-400', 'text-gray-400', 'text-yellow-400');
+    statusEl.onclick = null;
+    statusEl.style.cursor = '';
+    statusEl.title = '';
+
+    if (!available) {
+        statusEl.textContent = 'Not installed';
+        statusEl.classList.add('text-gray-400');
+        return;
+    }
+
+    const count = templates?.count || 0;
+    if (count > 0) {
+        statusEl.textContent = `${count.toLocaleString()} templates`;
+        statusEl.classList.add('text-green-400');
+        const bits = [];
+        if (templates.version) bits.push(`version ${templates.version}`);
+        if (templates.updated_at) bits.push(`updated ${new Date(templates.updated_at).toLocaleDateString()}`);
+        statusEl.title = bits.length ? `Nuclei templates: ${bits.join(' · ')}` : 'Nuclei templates installed';
+    } else {
+        statusEl.textContent = '⚠ No templates — install';
+        statusEl.classList.add('text-yellow-400');
+        statusEl.style.cursor = 'pointer';
+        statusEl.title = 'Click to download nuclei templates';
+        statusEl.onclick = () => updateNucleiTemplates(false);
+    }
+}
+
+async function updateNucleiTemplates(force = false) {
+    try {
+        const resp = await fetch('/api/vuln-advanced/nuclei/templates/update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ force })
+        });
+        const data = await resp.json();
+        if (data.success) {
+            showNotification('Nuclei templates downloading in the background — this can take a minute', 'success');
+            setTimeout(refreshNucleiTemplateStatus, 20000);
+        } else {
+            showNotification(data.error || 'Failed to start template update', 'error');
+        }
+    } catch (e) {
+        console.error('Error updating nuclei templates:', e);
+        showNotification('Failed to start template update', 'error');
+    }
+}
+
+async function refreshNucleiTemplateStatus() {
+    try {
+        const resp = await fetch('/api/vuln-advanced/nuclei/templates');
+        const data = await resp.json();
+        if (data.success && advVulnScannersStatusCache) {
+            updateScannerStatus(advVulnScannersStatusCache, data.templates);
+        }
+    } catch (e) {
+        // non-fatal
     }
 }
 
