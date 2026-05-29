@@ -1246,6 +1246,31 @@ class AdvancedVulnScanner:
             except Exception as e:
                 logger.debug(f"Periodic nuclei template refresh failed: {e}")
 
+    def _resolve_nuclei_template_args(self, requested: List[str]) -> List[str]:
+        """Map logical template categories to -t paths valid for the installed
+        nuclei-templates layout.
+
+        nuclei-templates v9.6+ moved the HTTP categories (cves, exposures,
+        misconfiguration, technologies, takeovers, default-logins, ...) under
+        an `http/` directory. Passing the old top-level path makes nuclei exit
+        immediately with "no templates were found", so we probe both layouts
+        and drop categories that exist in neither.
+        """
+        tdir = self._find_nuclei_templates_dir()
+        resolved = []
+        for raw in requested:
+            cat = (raw or '').strip().strip('/')
+            if not cat:
+                continue
+            if not tdir:
+                resolved.append(cat)
+                continue
+            for candidate in (cat, f'http/{cat}'):
+                if os.path.isdir(os.path.join(tdir, candidate)):
+                    resolved.append(candidate)
+                    break
+        return resolved
+
     def _run_nuclei_scan(self, scan_id: str, target: str, options: Dict):
         """Run Nuclei template-based scan"""
         nuclei_path = self._tool_paths.get('nuclei')
@@ -1258,10 +1283,22 @@ class AdvancedVulnScanner:
         templates = options.get('templates', self.NUCLEI_FAST_TEMPLATES)
         severity_filter = options.get('severity', 'low,medium,high,critical')
         rate_limit = options.get('rate_limit', 150)
-        
+
+        # Warn early if templates are missing — otherwise nuclei is a no-op
+        tpl_info = self.get_nuclei_template_info()
+        if tpl_info.get('count', 0) == 0:
+            self._scan_log(scan_id, 'warning',
+                           "No nuclei templates installed — triggering download. "
+                           "This scan may report nothing until templates finish installing.")
+            threading.Thread(target=self.ensure_nuclei_templates, daemon=True).start()
+        else:
+            self._scan_log(scan_id, 'info',
+                           f"Using {tpl_info['count']} nuclei templates (version {tpl_info.get('version') or 'unknown'})")
+
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as output_file:
             output_path = output_file.name
-        
+        stderr_path = output_path + '.err'
+
         try:
             cmd = [
                 nuclei_path,
@@ -1270,14 +1307,23 @@ class AdvancedVulnScanner:
                 '-o', output_path,
                 '-severity', severity_filter,
                 '-rate-limit', str(rate_limit),
-                '-silent',
+                '-stats', '-si', '30',
                 '-no-color'
             ]
-            
-            # Add template filters if specified
+
+            # Resolve template categories against the installed layout (v9.6+
+            # moved them under http/). Skip -t entirely if none resolve, so
+            # nuclei falls back to its full default set instead of erroring.
             if templates:
-                for t in templates[:5]:  # Limit templates
-                    cmd.extend(['-t', t])
+                resolved = self._resolve_nuclei_template_args(templates)
+                if resolved:
+                    for t in resolved[:8]:
+                        cmd.extend(['-t', t])
+                    self._scan_log(scan_id, 'info', f"Nuclei template paths: {', '.join(resolved[:8])}")
+                else:
+                    self._scan_log(scan_id, 'warning',
+                                   "No requested template categories found on disk; "
+                                   "running nuclei's default template set filtered by severity")
 
             # Add HTTP Basic Auth header if provided
             if options.get('http_basic_auth'):
@@ -1305,34 +1351,63 @@ class AdvancedVulnScanner:
                     cmd.extend(['-H', header])
 
             logger.debug(f"Running Nuclei: {' '.join(cmd)}")
-            
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
-            self._register_scan_process(scan_id, process)
 
-            # Monitor progress with a hard runtime cap so a hung nuclei
-            # process cannot block the scan thread indefinitely.
-            max_runtime = int(options.get('max_runtime', 1800))
-            start_time = time.monotonic()
-            while process.poll() is None:
-                time.sleep(2)
-                if self._is_scan_cancelled(scan_id):
-                    process.kill()
-                    break
-                if time.monotonic() - start_time > max_runtime:
-                    self._scan_log(scan_id, 'warning', f"Nuclei scan exceeded {max_runtime}s, terminating")
-                    process.kill()
-                    break
-                progress.current_check = "Scanning with Nuclei templates..."
-                # Update findings count from output file
-                if os.path.exists(output_path):
-                    with open(output_path, 'r') as f:
-                        lines = f.readlines()
-                        progress.findings_count = len(lines)
+            # stdout goes to the -o file; route process stdout to DEVNULL and
+            # stderr to a file so the pipe buffer can never fill and deadlock,
+            # and so we can read the real error message afterwards.
+            errf = open(stderr_path, 'w')
+            try:
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=errf,
+                    text=True
+                )
+                self._register_scan_process(scan_id, process)
+
+                # Monitor progress with a hard runtime cap so a hung nuclei
+                # process cannot block the scan thread indefinitely.
+                max_runtime = int(options.get('max_runtime', 1800))
+                start_time = time.monotonic()
+                while process.poll() is None:
+                    time.sleep(2)
+                    if self._is_scan_cancelled(scan_id):
+                        process.kill()
+                        break
+                    if time.monotonic() - start_time > max_runtime:
+                        self._scan_log(scan_id, 'warning', f"Nuclei scan exceeded {max_runtime}s, terminating")
+                        process.kill()
+                        break
+                    progress.current_check = "Scanning with Nuclei templates..."
+                    # Update findings count from output file
+                    if os.path.exists(output_path):
+                        with open(output_path, 'r') as f:
+                            lines = f.readlines()
+                            progress.findings_count = len(lines)
+            finally:
+                errf.close()
+
+            returncode = process.returncode
+            stderr_text = ''
+            try:
+                with open(stderr_path, 'r', errors='replace') as f:
+                    stderr_text = f.read()
+            except Exception:
+                pass
+
+            # Surface nuclei's own diagnostics — previously these were discarded,
+            # leaving "0 findings" indistinguishable from a hard failure.
+            lower_err = stderr_text.lower()
+            if returncode not in (0, None) and not self._is_scan_cancelled(scan_id):
+                tail = stderr_text.strip()[-600:]
+                self._scan_log(scan_id, 'warning',
+                               f"Nuclei exited with code {returncode}" + (f": {tail}" if tail else ""))
+            if any(s in lower_err for s in ('no templates were found', 'could not find any templates',
+                                            'no templates provided', 'no valid templates')):
+                msg = ("Nuclei loaded no templates — templates are missing or the requested "
+                       "categories don't exist. Use the 'install templates' action on the Nuclei card.")
+                self._scan_log(scan_id, 'error', msg)
+                progress.error_message = msg
 
             # Parse results
             if os.path.exists(output_path):
@@ -1344,10 +1419,14 @@ class AdvancedVulnScanner:
                                 self.scan_results[scan_id].append(finding)
                         except json.JSONDecodeError:
                             continue
-                            
+
         finally:
-            if os.path.exists(output_path):
-                os.unlink(output_path)
+            for path in (output_path, stderr_path):
+                if os.path.exists(path):
+                    try:
+                        os.unlink(path)
+                    except Exception:
+                        pass
     
     def _parse_nuclei_result(self, json_line: str, scan_id: str) -> Optional[VulnerabilityFinding]:
         """Parse a Nuclei JSON output line"""
