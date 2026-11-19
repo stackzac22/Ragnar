@@ -416,6 +416,28 @@ it was recorded in**.
 
 ---
 
+## SquachWatch link (HUMAN SENSING boards)
+
+A [SquachWatch](https://github.com/skizzophrenic/SquachWatch-CYD) board running
+**HUMAN SENSING** (router-ping CSI motion on one ESP32) can link to RuSense both ways
+over the WiFi it already joined:
+
+- **Pull:** the board polls `GET /api/cyd/rusense` every 2 s and shows the mesh's verdict.
+  It appears as a `MESH` tag in the title bar, as `PRESENCE (the RuSense mesh sees N)` on
+  the banner when its own path is still, and as a **MESH** page on the bigger boards
+  (presence, people, confidence, breathing / heart rate, nodes up, last sighting).
+- **Push:** the board posts its own verdict to `POST /api/cyd/presence`. It is listed under
+  **SquachWatch boards** in the Dashboard's RuSense health card. With **Settings →
+  SquachWatch boards corroborate presence** (`rusense_cyd_vote`, off by default), a fresh
+  board MOTION (trust ≥ 50 %) counts as one extra presence vote in the ≥2-node quorum. It
+  can back up a RuSense node, but it never confirms presence alone.
+
+Setup: generate a token under **Mesh → CYD Nodes**, then on the board's serial console:
+`SENSE RAGNAR <ragnar-ip> <token>` (port 8000 is assumed), optionally
+`SENSE RAGNAR LINK pull|push|both`, and reopen HUMAN SENSING. The token reaches only the
+CYD device endpoints. Don't stream the board's raw CSI to the sensing-server: its 64-tone
+L-LTF width doesn't match the S3 nodes, and mixed widths break fusion.
+
 ## Placement & tuning tips
 
 - Position nodes so the area you care about sits **between the node and the WiFi

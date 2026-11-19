@@ -13,9 +13,9 @@ module owns:
     2.4 GHz sensor counts, a short history ring, and a log of operator actions
     requested from a node's touch screen.
 
-Scope is deliberately narrow — the webapp exposes exactly three device-facing
-routes (/api/cyd/status, /api/cyd/ingest, /api/cyd/action) behind the token
-role, plus operator-only token management. Nothing here drives the radio or
+Scope is deliberately narrow — the webapp exposes only the device-facing
+routes (/api/cyd/status, /wf, /ingest, /action, plus /rusense and /presence for
+SquachWatch HUMAN SENSING) behind the token role, plus operator-only token management. Nothing here drives the radio or
 runs a scan; the node does its own sensing and reports counts.
 """
 
@@ -172,6 +172,68 @@ def record_ingest(payload, remote_ip):
     return summarize_node(name)
 
 
+# ── SquachWatch HUMAN SENSING presence reports ─────────────────────────────────
+# A SquachWatch board running HUMAN SENSING (router-ping CSI motion model) posts
+# its local verdict here (POST /api/cyd/presence). It is an EXTERNAL source: it
+# never feeds RuSense's per-node person_count, and it may only *corroborate* a
+# RuSense presence vote (opt-in rusense_cyd_vote), never create one alone.
+# State codes mirror SquachWatch's SENSE_STATE_* (include/sense_cyd.h).
+PRESENCE_STATES = {0: 'cal', 1: 'lowdata', 2: 'still', 3: 'possible', 4: 'motion'}
+_PRESENCE_FRESH_S = 5.0       # a vote older than this is ignored by fusion
+
+
+def _clamp_int(v, lo, hi, default=0):
+    try:
+        return max(lo, min(hi, int(v)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _clean_presence(payload):
+    """Coerce a presence report to bounded ints, dropping unknown keys."""
+    return {
+        'state': _clamp_int(payload.get('state'), 0, 4),
+        'score': _clamp_int(payload.get('score'), 0, 100),
+        'rel': _clamp_int(payload.get('rel'), 0, 100),
+        'presence': bool(payload.get('presence')),
+        'rssi': _clamp_int(payload.get('rssi'), -127, 0, -127),
+        'chan': _clamp_int(payload.get('chan'), 0, 196),
+    }
+
+
+def record_presence(payload, remote_ip, token_name=None):
+    """Store a SquachWatch HUMAN SENSING verdict. The node is named by the token
+    it authenticated with (the payload's own name is advisory only)."""
+    name = str(token_name or payload.get('node') or 'squachwatch')[:32]
+    p = _clean_presence(payload)
+    now = time.time()
+    with _LOCK:
+        n = _node(name)
+        n['ip'] = remote_ip
+        n['last_seen'] = now
+        p['ts'] = now
+        n['presence'] = p
+    return summarize_node(name)
+
+
+def presence_reports(max_age=_PRESENCE_FRESH_S):
+    """Fresh SquachWatch presence reports: [(name, report)], newest data only."""
+    now = time.time()
+    out = []
+    with _LOCK:
+        for name, n in _NODES.items():
+            p = n.get('presence')
+            if p and (now - p.get('ts', 0)) <= max_age:
+                out.append((name, dict(p)))
+    return out
+
+
+def presence_vote(min_rel=50, max_age=_PRESENCE_FRESH_S):
+    """1 when any fresh SquachWatch board reads MOTION with trust >= min_rel."""
+    return 1 if any(p['state'] == 4 and p['rel'] >= min_rel
+                    for _n, p in presence_reports(max_age)) else 0
+
+
 def record_action(node_name, action, remote_ip, status='requested'):
     """Log an operator action requested from a node's touch screen.
 
@@ -200,7 +262,20 @@ def summarize_node(name):
             'stale': (age is None) or (age > _STALE_AFTER),
             'counts': dict(n['counts']),
             'recent_actions': list(n['actions'])[-5:],
+            'presence': _presence_summary(n.get('presence')),
         }
+
+
+def _presence_summary(p):
+    if not p:
+        return None
+    age = time.time() - p.get('ts', 0)
+    return {
+        'state': PRESENCE_STATES.get(p['state'], 'cal'),
+        'score': p['score'], 'rel': p['rel'], 'presence': p['presence'],
+        'rssi': p['rssi'], 'chan': p['chan'],
+        'age_sec': round(age, 1), 'fresh': age <= _PRESENCE_FRESH_S,
+    }
 
 
 def list_nodes():

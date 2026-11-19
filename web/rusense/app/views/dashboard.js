@@ -180,6 +180,8 @@ export default {
             <div id="rs-node-list" class="space-y-2 pt-1 border-t border-ink-3 text-sm">
               <div class="text-ink-muted">Loading nodes…</div>
             </div>
+            <!-- SquachWatch HUMAN SENSING boards (external, router-ping CSI) -->
+            <div id="rs-squach-list" class="space-y-2 pt-1 border-t border-ink-3 text-sm hidden"></div>
           </div>
         </div>
 
@@ -221,12 +223,14 @@ export default {
 
     // RuSense backend + node health (replaces generic host CPU/mem/disk).
     const refreshHealth = async () => {
-      const [st, svc, n, gf] = await Promise.all([
+      const [st, svc, n, gf, cyd] = await Promise.all([
         fetchJSON('/api/v1/status'),
         fetchJSON('/api/sensing/status'),
         fetchJSON('/api/v1/nodes'),
         fetchJSON('/api/rusense/geofence'),
+        fetchJSON('/api/cyd/nodes'),
       ]);
+      this.renderSquach(cyd?.nodes || []);
       // Last geofence verdict — lets the presence banner tell "person in the
       // room" apart from "through-wall disturbance" (same rule the backend
       // uses to suppress alerts: energetic but NOT corroborated interior).
@@ -385,6 +389,25 @@ export default {
 
   // Render the sightings table from cached rows. Called on each 7s fetch and on
   // the 1s tick so the open sighting's "seen for" duration counts up live.
+  // SquachWatch boards posting HUMAN SENSING verdicts (POST /api/cyd/presence).
+  // An external sensor, not a CSI mesh node: shown apart from the node list.
+  renderSquach(nodes) {
+    const el = $('#rs-squach-list'); if (!el) return;
+    const boards = nodes.filter((x) => x && x.presence);
+    el.classList.toggle('hidden', boards.length === 0);
+    if (!boards.length) { el.innerHTML = ''; return; }
+    const esc = (t) => String(t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    el.innerHTML = '<div class="text-xs text-ink-muted">SquachWatch boards</div>' + boards.map((x) => {
+      const p = x.presence;
+      const dot = !p.fresh ? 'bg-ink-3' : (p.state === 'motion' ? 'bg-bad' : (p.state === 'possible' ? 'bg-warn' : 'bg-ok'));
+      const st = p.fresh ? `${p.state.toUpperCase()} ${p.score}` : `stale ${fmt.ago(p.age_sec)}`;
+      return `<div class="flex items-center justify-between">
+        <span class="flex items-center gap-2"><span class="dot w-2 h-2 ${dot}" title="trust ${p.rel}% · ch ${p.chan}"></span>${esc(x.name)}</span>
+        <span class="font-mono text-ink-soft">${st}</span>
+      </div>`;
+    }).join('');
+  }
+
   renderSightings() {
     const body = $('#sightings-body'); if (!body) return;
     const rows = this._sightings || [];

@@ -1008,13 +1008,16 @@ def check_authentication():
             (request.method == 'GET'  and path == '/api/cyd/status') or
             (request.method == 'GET'  and path == '/api/cyd/wf') or
             (request.method == 'POST' and path == '/api/cyd/ingest') or
-            (request.method == 'POST' and path == '/api/cyd/action')
+            (request.method == 'POST' and path == '/api/cyd/action') or
+            # SquachWatch HUMAN SENSING link: read the RuSense verdict, post its own.
+            (request.method == 'GET'  and path == '/api/cyd/rusense') or
+            (request.method == 'POST' and path == '/api/cyd/presence')
         )
         if cyd_ok:
             g.cyd_node = cyd_name
             return
         return jsonify({'error': 'Forbidden',
-                        'detail': 'cyd device token: status/ingest/action only'}), 403
+                        'detail': 'cyd device token: status/ingest/action/rusense/presence only'}), 403
 
     # Check if user is authenticated via Flask session
     if not session.get('authenticated'):
@@ -1900,8 +1903,17 @@ def _rusense_check_once():
         # nodes AND/OR the aggregate, so it clears 2 votes easily. With only one
         # node deployed there can't be 2 votes, so fall back to "any signal".
         votes = (1 if engine_present else 0) + node_hits
+        # Opt-in: a fresh SquachWatch HUMAN SENSING board reading MOTION counts as
+        # one more vote. Only in the quorum path, so it can corroborate a RuSense
+        # vote but never confirm presence on its own.
+        cyd_vote = 0
+        if shared_data.config.get('rusense_cyd_vote', False):
+            try:
+                cyd_vote = cyd_node.presence_vote()
+            except Exception:
+                cyd_vote = 0
         if node_total >= 2:
-            present = votes >= 2
+            present = (votes + cyd_vote) >= 2
         else:
             present = engine_present or node_hits >= 1
         motion_active = motion_level == 'active'
@@ -2024,8 +2036,29 @@ def _rusense_check_once():
             'motion_level': (motion_level or 'present') if bk_present else 'absent',
             'confidence': conf,
             'model_active': bool(has_model),
+            'cyd_vote': bool(cyd_vote),
             'ts': now,
         }
+        # Compact extras for the SquachWatch link (/api/cyd/rusense): the latest
+        # confident vitals and the node roster, so it needs no upstream GET.
+        hr = br = None
+        if isinstance(vitals, dict):
+            try:
+                if float(vitals.get('heartbeat_confidence') or 0) >= _RUSENSE_VITALS_MIN_CONF:
+                    hr = round(float(vitals['heart_rate_bpm']))
+            except (TypeError, ValueError, KeyError):
+                hr = None
+            try:
+                if float(vitals.get('breathing_confidence') or 0) >= _RUSENSE_VITALS_MIN_CONF:
+                    br = round(float(vitals['breathing_rate_bpm']), 1)
+            except (TypeError, ValueError, KeyError):
+                br = None
+        _rusense_notify_state['presence_pub'].update({
+            'hr': hr, 'br': br,
+            'nodes_up': (sum(1 for n in node_list if n.get('status') == 'active')
+                         if node_list is not None else None),
+            'nodes_total': len(node_list) if node_list is not None else None,
+        })
         if alerts_now and m_rose and not block_motion:
             po.notify_rusense(
                 'motion',
@@ -3370,6 +3403,55 @@ def cyd_ingest():
         cyd_sensor.process_report(data.get('node'), data)   # → WiFi-Defense alerts
     except Exception as exc:
         logger.debug(f"[cyd] sensor process failed: {exc}")
+    return jsonify({'success': True, 'node': summary})
+
+
+@app.route('/api/cyd/rusense', methods=['GET'])
+def cyd_rusense():
+    """Compact RuSense verdict for a SquachWatch HUMAN SENSING board (device
+    token). The same smoothed presence state that gates RuSense alerts, plus the
+    latest confident vitals, node health and the newest sighting. Kept small so
+    the board parses it in a few hundred bytes."""
+    pub = _rusense_notify_state.get('presence_pub') or {}
+    ts = pub.get('ts')
+    age = round(time.time() - ts, 1) if ts else None
+    if age is None or age > 30:
+        return jsonify({'rusense': False, 'age_s': age})
+    conf = pub.get('confidence')
+    out = {
+        'rusense': True,
+        'present': bool(pub.get('present')),
+        'people': int(pub.get('people') or 0),
+        'motion': str(pub.get('motion_level') or 'absent')[:16],
+        'conf': (int(round(float(conf) * 100)) if isinstance(conf, (int, float)) else None),
+        'model': bool(pub.get('model_active')),
+        'age_s': age,
+        'hr': pub.get('hr'), 'br': pub.get('br'),
+        'up': pub.get('nodes_up'), 'nodes': pub.get('nodes_total'),
+        'cyd_vote': bool(pub.get('cyd_vote')),
+    }
+    try:
+        with _rusense_sightings_lock:
+            lst = _rusense_sightings_unlocked()
+            last = lst[-1] if lst else None
+        if last:
+            end = last.get('ended_ts') or last.get('last_seen') or last.get('ts')
+            out['sight_ago'] = int(time.time() - float(end)) if last.get('ended_ts') else 0
+            out['sight_s'] = int(float(end) - float(last.get('ts')))
+    except Exception:
+        pass
+    return jsonify(out)
+
+
+@app.route('/api/cyd/presence', methods=['POST'])
+def cyd_presence():
+    """A SquachWatch HUMAN SENSING board posts its local motion verdict
+    (state/score/rel/presence). Stored as an external source in the CYD registry;
+    it feeds RuSense presence only as an opt-in corroborating vote
+    (rusense_cyd_vote)."""
+    data = request.get_json(silent=True) or {}
+    summary = cyd_node.record_presence(data, request.remote_addr,
+                                       getattr(g, 'cyd_node', None))
     return jsonify({'success': True, 'node': summary})
 
 

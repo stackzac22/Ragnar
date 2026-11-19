@@ -453,6 +453,20 @@ export default {
           <p id="st-geofence-status" class="text-xs text-ink-muted pt-1">Checking geofence status…</p>
         </div>
 
+        <div class="card card-pad space-y-1">
+          <label class="flex items-start justify-between gap-4 py-1 cursor-pointer">
+            <span class="min-w-0">
+              <span class="block text-sm font-semibold">SquachWatch boards corroborate presence</span>
+              <span class="block text-xs text-ink-muted">A SquachWatch board in HUMAN SENSING with a CYD device token posts its
+                own motion verdict. When on, a fresh <strong>MOTION</strong> from a board counts as one extra presence vote.
+                It can back up a RuSense node, but it never confirms presence by itself. Needs ≥2 RuSense nodes.</span>
+            </span>
+            <input type="checkbox" id="st-cyd-vote" data-key="rusense_cyd_vote"
+              ${c.rusense_cyd_vote ? 'checked' : ''}
+              class="mt-1 shrink-0 w-6 h-6 accent-brand-400 cursor-pointer" />
+          </label>
+        </div>
+
         <div class="flex flex-wrap gap-3">
           <button id="st-save" class="btn-primary">Save settings</button>
           <button id="st-test" class="btn-ghost">Send test notification</button>
@@ -560,6 +574,7 @@ export default {
       payload.rusense_alert_start = clampInt($('#st-sched-start'), 0, 23, 0);
       payload.rusense_alert_end = clampInt($('#st-sched-end'), 0, 23, 0);
       payload.rusense_geofence_enabled = $('#st-geofence').checked;
+      payload.rusense_cyd_vote = $('#st-cyd-vote').checked;
       // Reconcile the node map to the backend on every save (positions + names
       // also auto-sync as you edit them in the Observatory section below).
       try {

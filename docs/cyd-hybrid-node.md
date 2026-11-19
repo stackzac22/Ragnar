@@ -382,3 +382,11 @@ Tailscale mesh itself is running.
 - [x] 5 s boot splash (`ragnar-240x320-tools.gif`, on-device AnimatedGIF decode).
 - [x] ESP Web Tools flasher page + committed bins (`cyd_firmware/flasher`).
 - [ ] Move the operator web UI out of the Ragnar Mesh tab (de-mesh, pending).
+
+## SquachWatch HUMAN SENSING boards
+
+The same device-token role also admits SquachWatch boards linking HUMAN SENSING to
+RuSense: `GET /api/cyd/rusense` (the mesh's compact verdict) and
+`POST /api/cyd/presence` (the board's own state/score/trust, stored per token name in
+the registry and shown by `/api/cyd/nodes` as `presence`). See
+[RuSense → SquachWatch link](rusense.md#squachwatch-link-human-sensing-boards).
